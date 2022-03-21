@@ -68,6 +68,9 @@ spec:
             - "--metricspath=/metrics"
             - "--enablegrpcmetrics={{ .EnableCSIGRPCMetrics }}"
             - "--stagingpath={{ .KubeletDirPath }}/plugins/kubernetes.io/csi/pv/"
+            {{ if .EnableCSIAddonsSideCar }}
+            - "--csi-addons-endpoint=$(CSIADDONS_ENDPOINT)"
+            {{ end }}
           env:
             - name: POD_IP
               valueFrom:
@@ -83,6 +86,10 @@ spec:
                   fieldPath: metadata.namespace
             - name: CSI_ENDPOINT
               value: unix:///csi/csi.sock
+            {{ if .EnableCSIAddonsSideCar }}
+            - name: CSIADDONS_ENDPOINT
+              value: unix:///csi/csi-addons.sock
+            {{ end }}
           imagePullPolicy: "IfNotPresent"
           volumeMounts:
             - name: plugin-dir
@@ -100,12 +107,67 @@ spec:
             - mountPath: /lib/modules
               name: lib-modules
               readOnly: true
-            - name: ceph-csi-config
+            - name: ceph-csi-configs
               mountPath: /etc/ceph-csi-config/
             - name: keys-tmp-dir
               mountPath: /tmp/csi/keys
             - name: host-run-mount
               mountPath: /run/mount
+            {{ if .EnablePluginSelinuxHostMount }}
+            - name: etc-selinux
+              mountPath: /etc/selinux
+              readOnly: true
+            {{ end }}
+            {{ if .MountCustomCephConf }}
+            - name: ceph-config
+              mountPath: /etc/ceph/ceph.conf
+              subPath: ceph.conf
+            {{ end }}
+        {{ if .EnableCSIAddonsSideCar }}
+        - name: csi-addons
+          securityContext:
+            privileged: true
+          image: {{ .CSIAddonsImage }}
+          args :
+            - "--node-id=$(NODE_ID)"
+            - "--v={{ .LogLevel }}"
+            - "--csi-addons-address=$(CSIADDONS_ENDPOINT)"
+            - "--controller-ip=$(POD_IP)"
+            - "--controller-port={{ .CSIAddonsPort }}"
+            - "--pod=$(POD_NAME)"
+            - "--namespace=$(POD_NAMESPACE)"
+            - "--pod-uid=$(POD_UID)"
+            - "--stagingpath={{ .KubeletDirPath }}/plugins/kubernetes.io/csi/"
+          ports:
+            - containerPort: {{ .CSIAddonsPort }}
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: CSIADDONS_ENDPOINT
+              value: unix:///csi/csi-addons.sock
+          imagePullPolicy: "IfNotPresent"
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi
+        {{ end }}
         - name: liveness-prometheus
           securityContext:
             privileged: true
@@ -154,12 +216,21 @@ spec:
         - name: lib-modules
           hostPath:
             path: /lib/modules
-        - name: ceph-csi-config
-          configMap:
-            name: rook-ceph-csi-config
-            items:
-              - key: csi-cluster-config-json
-                path: config.json
+        - name: ceph-csi-configs
+          projected:
+            sources:
+              - name: ceph-csi-config
+                configMap:
+                  name: rook-ceph-csi-config
+                  items:
+                    - key: csi-cluster-config-json
+                      path: config.json
+              - name: ceph-csi-mapping-config
+                configMap:
+                  name: rook-ceph-csi-mapping-config
+                  items:
+                    - key: csi-mapping-config-json
+                      path: cluster-mapping.json
         - name: keys-tmp-dir
           emptyDir: {
             medium: "Memory"
@@ -167,3 +238,16 @@ spec:
         - name: host-run-mount
           hostPath:
             path: /run/mount
+        {{ if .EnablePluginSelinuxHostMount }}
+        - name: etc-selinux
+          hostPath:
+            path: /etc/selinux
+        {{ end }}
+        {{ if .MountCustomCephConf }}
+        - name: ceph-config
+          configMap:
+            name: csi-ceph-conf-override
+            items:
+            - key: ceph.conf
+              path: ceph.conf
+        {{ end }}

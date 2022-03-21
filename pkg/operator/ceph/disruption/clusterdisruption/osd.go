@@ -329,10 +329,11 @@ func (r *ReconcileClusterDisruption) reconcilePDBsForOSDs(
 		// If the error contains that message, this means the cluster is not up and running
 		// No monitors are present and thus no ceph configuration has been created
 		if strings.Contains(err.Error(), opcontroller.UninitializedCephConfigError) {
-			logger.Infof("Ceph %q cluster not ready, cannot check Ceph status yet.", request.Namespace)
+			logger.Debugf("ceph %q cluster not ready, cannot check status yet.", request.Namespace)
 			return opcontroller.WaitForRequeueIfOperatorNotInitialized, nil
 		}
-		return reconcile.Result{}, errors.Wrapf(err, "failed to check cluster health")
+		logger.Debugf("ceph %q cluster failed to check cluster health. %v", request.Namespace, err)
+		return opcontroller.WaitForRequeueIfCephClusterNotReady, nil
 	}
 
 	switch {
@@ -404,6 +405,21 @@ func (r *ReconcileClusterDisruption) reconcilePDBsForOSDs(
 
 	// requeue if drain is still in progress
 	if len(pdbStateMap.Data[drainingFailureDomainKey]) > 0 {
+		return reconcile.Result{Requeue: true, RequeueAfter: 30 * time.Second}, nil
+	}
+
+	// requeue if allowed disruptions in the default PDB is 0
+	allowedDisruptions, err := r.getAllowedDisruptions(osdPDBAppName, request.Namespace)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			logger.Debugf("default osd pdb %q not found. Skipping reconcile", osdPDBAppName)
+			return reconcile.Result{}, nil
+		}
+		return reconcile.Result{}, errors.Wrapf(err, "failed to get allowed disruptions count from default osd pdb %q.", osdPDBAppName)
+	}
+
+	if allowedDisruptions == 0 {
+		logger.Info("reconciling osd pdb reconciler as the allowed disruptions in default pdb is 0")
 		return reconcile.Result{Requeue: true, RequeueAfter: 30 * time.Second}, nil
 	}
 
@@ -638,6 +654,30 @@ func getLastDrainTimeStamp(pdbStateMap *corev1.ConfigMap, key string) (time.Time
 	}
 
 	return lastDrainTimeStamp, nil
+}
+
+func (r *ReconcileClusterDisruption) getAllowedDisruptions(pdbName, namespace string) (int32, error) {
+	usePDBV1Beta1, err := k8sutil.UsePDBV1Beta1Version(r.context.ClusterdContext.Clientset)
+	if err != nil {
+		return -1, errors.Wrap(err, "failed to fetch pdb version")
+	}
+	if usePDBV1Beta1 {
+		pdb := &policyv1beta1.PodDisruptionBudget{}
+		err = r.client.Get(context.TODO(), types.NamespacedName{Name: pdbName, Namespace: namespace}, pdb)
+		if err != nil {
+			return -1, err
+		}
+
+		return pdb.Status.DisruptionsAllowed, nil
+	}
+
+	pdb := &policyv1.PodDisruptionBudget{}
+	err = r.client.Get(context.TODO(), types.NamespacedName{Name: pdbName, Namespace: namespace}, pdb)
+	if err != nil {
+		return -1, err
+	}
+
+	return pdb.Status.DisruptionsAllowed, nil
 }
 
 func resetPDBConfig(pdbStateMap *corev1.ConfigMap) {

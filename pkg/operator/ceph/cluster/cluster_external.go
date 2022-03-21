@@ -44,13 +44,17 @@ func (c *ClusterController) configureExternalCephCluster(cluster *cluster) error
 		return errors.Wrap(err, "failed to validate external cluster specs")
 	}
 
-	opcontroller.UpdateCondition(c.context, c.namespacedName, cephv1.ConditionConnecting, v1.ConditionTrue, cephv1.ClusterConnectingReason, "Attempting to connect to an external Ceph cluster")
+	opcontroller.UpdateCondition(c.OpManagerCtx, c.context, c.namespacedName, k8sutil.ObservedGenerationNotAvailable, cephv1.ConditionConnecting, v1.ConditionTrue, cephv1.ClusterConnectingReason, "Attempting to connect to an external Ceph cluster")
 
 	// loop until we find the secret necessary to connect to the external cluster
 	// then populate clusterInfo
 
-	cluster.ClusterInfo = mon.PopulateExternalClusterInfo(c.context, c.namespacedName.Namespace, cluster.ownerInfo)
+	cluster.ClusterInfo, err = mon.PopulateExternalClusterInfo(c.context, c.OpManagerCtx, c.namespacedName.Namespace, cluster.ownerInfo)
+	if err != nil {
+		return errors.Wrap(err, "failed to populate external cluster info")
+	}
 	cluster.ClusterInfo.SetName(c.namespacedName.Name)
+	cluster.ClusterInfo.Context = c.OpManagerCtx
 
 	if !client.IsKeyringBase64Encoded(cluster.ClusterInfo.CephCred.Secret) {
 		return errors.Errorf("invalid user health checker key for user %q", cluster.ClusterInfo.CephCred.Username)
@@ -110,7 +114,7 @@ func (c *ClusterController) configureExternalCephCluster(cluster *cluster) error
 	}
 
 	// Save CSI configmap
-	err = csi.SaveClusterConfig(c.context.Clientset, c.namespacedName.Namespace, cluster.ClusterInfo, c.csiConfigMutex)
+	err = csi.SaveClusterConfig(c.context.Clientset, c.namespacedName.Namespace, cluster.ClusterInfo, &csi.CsiClusterConfigEntry{Monitors: csi.MonEndpoints(cluster.ClusterInfo.Monitors)})
 	if err != nil {
 		return errors.Wrap(err, "failed to update csi cluster config")
 	}
@@ -212,7 +216,7 @@ func (c *ClusterController) configureExternalClusterMonitoring(context *clusterd
 		return err
 	}
 	logger.Info("creating mgr external monitoring service")
-	_, err = k8sutil.CreateOrUpdateService(context.Clientset, cluster.Namespace, service)
+	_, err = k8sutil.CreateOrUpdateService(cluster.ClusterInfo.Context, context.Clientset, cluster.Namespace, service)
 	if err != nil && !kerrors.IsAlreadyExists(err) {
 		return errors.Wrap(err, "failed to create or update mgr service")
 	}

@@ -19,10 +19,8 @@ package exec
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"reflect"
@@ -142,93 +140,6 @@ func (*CommandExecutor) ExecuteCommandWithCombinedOutput(command string, arg ...
 	return runCommandWithOutput(cmd, true)
 }
 
-// ExecuteCommandWithOutputFileTimeout Same as ExecuteCommandWithOutputFile but with a timeout limit.
-// #nosec G307 Calling defer to close the file without checking the error return is not a risk for a simple file open and close
-func (*CommandExecutor) ExecuteCommandWithOutputFileTimeout(timeout time.Duration,
-	command, outfileArg string, arg ...string) (string, error) {
-
-	outFile, err := ioutil.TempFile("", "")
-	if err != nil {
-		return "", errors.Wrap(err, "failed to open output file")
-	}
-	defer outFile.Close()
-	defer os.Remove(outFile.Name())
-
-	arg = append(arg, outfileArg, outFile.Name())
-	logCommand(command, arg...)
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	// #nosec G204 Rook controls the input to the exec arguments
-	cmd := exec.CommandContext(ctx, command, arg...)
-	cmdOut, err := cmd.CombinedOutput()
-	if err != nil {
-		cmdOut = []byte(fmt.Sprintf("%s. %s", string(cmdOut), assertErrorType(err)))
-	}
-
-	// if there was anything that went to stdout/stderr then log it, even before
-	// we return an error
-	if string(cmdOut) != "" {
-		if !strings.Contains(err.Error(), "error calling conf_read_file") {
-			logger.Debug(string(cmdOut))
-		}
-	}
-
-	if ctx.Err() == context.DeadlineExceeded {
-		return string(cmdOut), ctx.Err()
-	}
-
-	if err != nil {
-		return string(cmdOut), &CephCLIError{err: err, output: string(cmdOut)}
-	}
-
-	fileOut, err := ioutil.ReadAll(outFile)
-	if err := outFile.Close(); err != nil {
-		return "", err
-	}
-	return string(fileOut), err
-}
-
-// ExecuteCommandWithOutputFile executes a command with output on a file
-// #nosec G307 Calling defer to close the file without checking the error return is not a risk for a simple file open and close
-func (*CommandExecutor) ExecuteCommandWithOutputFile(command, outfileArg string, arg ...string) (string, error) {
-
-	// create a temporary file to serve as the output file for the command to be run and ensure
-	// it is cleaned up after this function is done
-	outFile, err := ioutil.TempFile("", "")
-	if err != nil {
-		return "", errors.Wrap(err, "failed to open output file")
-	}
-	defer outFile.Close()
-	defer os.Remove(outFile.Name())
-
-	// append the output file argument to the list or args
-	arg = append(arg, outfileArg, outFile.Name())
-
-	logCommand(command, arg...)
-	// #nosec G204 Rook controls the input to the exec arguments
-	cmd := exec.Command(command, arg...)
-	cmdOut, err := cmd.CombinedOutput()
-	if err != nil {
-		cmdOut = []byte(fmt.Sprintf("%s. %s", string(cmdOut), assertErrorType(err)))
-	}
-	// if there was anything that went to stdout/stderr then log it, even before we return an error
-	if string(cmdOut) != "" {
-		logger.Debug(string(cmdOut))
-	}
-	if err != nil {
-		return string(cmdOut), &CephCLIError{err: err, output: string(cmdOut)}
-	}
-
-	// read the entire output file and return that to the caller
-	fileOut, err := ioutil.ReadAll(outFile)
-	if err := outFile.Close(); err != nil {
-		return "", err
-	}
-	return string(fileOut), err
-}
-
 func startCommand(env []string, command string, arg ...string) (*exec.Cmd, io.ReadCloser, io.ReadCloser, error) {
 	logCommand(command, arg...)
 
@@ -336,18 +247,21 @@ func ExtractExitCode(err error) (int, error) {
 	case *kexec.CodeExitError:
 		return errType.ExitStatus(), nil
 
+	// have to check both *kexec.CodeExitError and kexec.CodeExitError because CodeExitError methods
+	// are not defined with pointer receivers; both pointer and non-pointers are valid `error`s.
+	case kexec.CodeExitError:
+		return errType.ExitStatus(), nil
+
 	case *kerrors.StatusError:
 		return int(errType.ErrStatus.Code), nil
 
 	default:
 		logger.Debugf(err.Error())
-		// This is ugly but I don't know why the type assertion does not work...
-		// Whatever I've tried I can see the type "exec.CodeExitError" but none of the "case" nor other attempts with "errors.As()" worked :(
-		// So I'm parsing the Error string until we have a solution
+		// This is ugly, but it's a decent backup just in case the error isn't a type above.
 		if strings.Contains(err.Error(), "command terminated with exit code") {
 			a := strings.SplitAfter(err.Error(), "command terminated with exit code")
 			return strconv.Atoi(strings.TrimSpace(a[1]))
 		}
-		return 0, errors.Errorf("error %#v is not an ExitError nor CodeExitError but is %v", err, reflect.TypeOf(err))
+		return -1, errors.Errorf("error %#v is an unknown error type: %v", err, reflect.TypeOf(err))
 	}
 }

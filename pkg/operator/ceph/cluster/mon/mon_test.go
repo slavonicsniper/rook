@@ -19,16 +19,15 @@ package mon
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path"
 	"reflect"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
+	"github.com/coreos/pkg/capnslog"
 	"github.com/pkg/errors"
 	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
 	"github.com/rook/rook/pkg/clusterd"
@@ -40,7 +39,6 @@ import (
 	"github.com/rook/rook/pkg/operator/test"
 	exectest "github.com/rook/rook/pkg/util/exec/test"
 	"github.com/stretchr/testify/assert"
-	"github.com/tevino/abool"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -81,8 +79,7 @@ func newTestStartCluster(t *testing.T, namespace string) (*clusterd.Context, err
 
 func newTestStartClusterWithQuorumResponse(t *testing.T, namespace string, monResponse func() (string, error)) (*clusterd.Context, error) {
 	clientset := test.New(t, 3)
-	configDir, _ := ioutil.TempDir("", "")
-	defer os.RemoveAll(configDir)
+	configDir := t.TempDir()
 	executor := &exectest.MockExecutor{
 		MockExecuteCommandWithOutput: func(command string, args ...string) (string, error) {
 			if strings.Contains(command, "ceph-authtool") {
@@ -94,10 +91,9 @@ func newTestStartClusterWithQuorumResponse(t *testing.T, namespace string, monRe
 		},
 	}
 	return &clusterd.Context{
-		Clientset:                  clientset,
-		Executor:                   executor,
-		ConfigDir:                  configDir,
-		RequestCancelOrchestration: abool.New(),
+		Clientset: clientset,
+		Executor:  executor,
+		ConfigDir: configDir,
 	}, nil
 }
 
@@ -140,7 +136,6 @@ func TestResourceName(t *testing.T) {
 }
 
 func TestStartMonDeployment(t *testing.T) {
-	ctx := context.TODO()
 	namespace := "ns"
 	context, err := newTestStartCluster(t, namespace)
 	assert.NoError(t, err)
@@ -151,7 +146,7 @@ func TestStartMonDeployment(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: EndpointConfigMapName},
 		Data:       map[string]string{"maxMonId": "1"},
 	}
-	_, err = c.context.Clientset.CoreV1().ConfigMaps(c.Namespace).Create(ctx, cm, metav1.CreateOptions{})
+	_, err = c.context.Clientset.CoreV1().ConfigMaps(c.Namespace).Create(c.ClusterInfo.Context, cm, metav1.CreateOptions{})
 	assert.NoError(t, err)
 
 	// Start mon a on a specific node since there is no volumeClaimTemplate
@@ -159,7 +154,7 @@ func TestStartMonDeployment(t *testing.T) {
 	schedule := &MonScheduleInfo{Hostname: "host-a", Zone: "zonea"}
 	err = c.startMon(m, schedule)
 	assert.NoError(t, err)
-	deployment, err := c.context.Clientset.AppsV1().Deployments(c.Namespace).Get(ctx, m.ResourceName, metav1.GetOptions{})
+	deployment, err := c.context.Clientset.AppsV1().Deployments(c.Namespace).Get(c.ClusterInfo.Context, m.ResourceName, metav1.GetOptions{})
 	assert.NoError(t, err)
 	assert.Equal(t, schedule.Hostname, deployment.Spec.Template.Spec.NodeSelector["kubernetes.io/hostname"])
 
@@ -169,35 +164,45 @@ func TestStartMonDeployment(t *testing.T) {
 	c.spec.Mon.VolumeClaimTemplate = &v1.PersistentVolumeClaim{}
 	err = c.startMon(m, schedule)
 	assert.NoError(t, err)
-	deployment, err = c.context.Clientset.AppsV1().Deployments(c.Namespace).Get(ctx, m.ResourceName, metav1.GetOptions{})
+	deployment, err = c.context.Clientset.AppsV1().Deployments(c.Namespace).Get(c.ClusterInfo.Context, m.ResourceName, metav1.GetOptions{})
 	assert.NoError(t, err)
 	// no node selector when there is a volumeClaimTemplate and the mon is assigned to a zone
 	assert.Equal(t, 0, len(deployment.Spec.Template.Spec.NodeSelector))
 }
 
 func TestStartMonPods(t *testing.T) {
-	ctx := context.TODO()
+	capnslog.SetGlobalLogLevel(capnslog.DEBUG)
+	os.Setenv("ROOK_LOG_LEVEL", "DEBUG")
 	namespace := "ns"
 	context, err := newTestStartCluster(t, namespace)
 	assert.NoError(t, err)
 	c := newCluster(context, namespace, true, v1.ResourceRequirements{})
 	c.ClusterInfo = clienttest.CreateTestClusterInfo(1)
+	c.spec.Annotations = cephv1.AnnotationsSpec{
+		cephv1.KeyClusterMetadata: cephv1.Annotations{
+			"key": "value",
+		},
+	}
 
 	// start a basic cluster
-	_, err = c.Start(c.ClusterInfo, c.rookVersion, cephver.Nautilus, c.spec)
+	_, err = c.Start(c.ClusterInfo, c.rookVersion, cephver.Octopus, c.spec)
 	assert.NoError(t, err)
 
-	validateStart(ctx, t, c)
+	// test annotations
+	secret, err := c.context.Clientset.CoreV1().Secrets(c.Namespace).Get(c.ClusterInfo.Context, AppName, metav1.GetOptions{})
+	assert.NoError(t, err)
+	assert.Equal(t, map[string]string{"key": "value"}, secret.Annotations)
 
-	// starting again should be a no-op, but still results in an error
-	_, err = c.Start(c.ClusterInfo, c.rookVersion, cephver.Nautilus, c.spec)
+	validateStart(t, c)
+
+	// starting again should be a no-op
+	_, err = c.Start(c.ClusterInfo, c.rookVersion, cephver.Octopus, c.spec)
 	assert.NoError(t, err)
 
-	validateStart(ctx, t, c)
+	validateStart(t, c)
 }
 
 func TestOperatorRestart(t *testing.T) {
-	ctx := context.TODO()
 	namespace := "ns"
 	context, err := newTestStartCluster(t, namespace)
 	assert.NoError(t, err)
@@ -205,26 +210,25 @@ func TestOperatorRestart(t *testing.T) {
 	c.ClusterInfo = clienttest.CreateTestClusterInfo(1)
 
 	// start a basic cluster
-	info, err := c.Start(c.ClusterInfo, c.rookVersion, cephver.Nautilus, c.spec)
+	info, err := c.Start(c.ClusterInfo, c.rookVersion, cephver.Octopus, c.spec)
 	assert.NoError(t, err)
 	assert.True(t, info.IsInitialized(true))
 
-	validateStart(ctx, t, c)
+	validateStart(t, c)
 
 	c = newCluster(context, namespace, true, v1.ResourceRequirements{})
 	c.ClusterInfo = clienttest.CreateTestClusterInfo(1)
 
 	// starting again should be a no-op, but will not result in an error
-	info, err = c.Start(c.ClusterInfo, c.rookVersion, cephver.Nautilus, c.spec)
+	info, err = c.Start(c.ClusterInfo, c.rookVersion, cephver.Octopus, c.spec)
 	assert.NoError(t, err)
 	assert.True(t, info.IsInitialized(true))
 
-	validateStart(ctx, t, c)
+	validateStart(t, c)
 }
 
 // safety check that if hostNetwork is used no changes occur on an operator restart
 func TestOperatorRestartHostNetwork(t *testing.T) {
-	ctx := context.TODO()
 	namespace := "ns"
 	context, err := newTestStartCluster(t, namespace)
 	assert.NoError(t, err)
@@ -234,11 +238,11 @@ func TestOperatorRestartHostNetwork(t *testing.T) {
 	c.ClusterInfo = clienttest.CreateTestClusterInfo(1)
 
 	// start a basic cluster
-	info, err := c.Start(c.ClusterInfo, c.rookVersion, cephver.Nautilus, c.spec)
+	info, err := c.Start(c.ClusterInfo, c.rookVersion, cephver.Octopus, c.spec)
 	assert.NoError(t, err)
 	assert.True(t, info.IsInitialized(true))
 
-	validateStart(ctx, t, c)
+	validateStart(t, c)
 
 	// cluster with host networking
 	c = newCluster(context, namespace, false, v1.ResourceRequirements{})
@@ -246,27 +250,27 @@ func TestOperatorRestartHostNetwork(t *testing.T) {
 	c.ClusterInfo = clienttest.CreateTestClusterInfo(1)
 
 	// starting again should be a no-op, but still results in an error
-	info, err = c.Start(c.ClusterInfo, c.rookVersion, cephver.Nautilus, c.spec)
+	info, err = c.Start(c.ClusterInfo, c.rookVersion, cephver.Octopus, c.spec)
 	assert.NoError(t, err)
 	assert.True(t, info.IsInitialized(true), info)
 
-	validateStart(ctx, t, c)
+	validateStart(t, c)
 }
 
-func validateStart(ctx context.Context, t *testing.T, c *Cluster) {
-	s, err := c.context.Clientset.CoreV1().Secrets(c.Namespace).Get(ctx, AppName, metav1.GetOptions{})
+func validateStart(t *testing.T, c *Cluster) {
+	s, err := c.context.Clientset.CoreV1().Secrets(c.Namespace).Get(c.ClusterInfo.Context, AppName, metav1.GetOptions{})
 	assert.NoError(t, err) // there shouldn't be an error due the secret existing
 	assert.Equal(t, 4, len(s.Data))
 
 	// there is only one pod created. the other two won't be created since the first one doesn't start
-	_, err = c.context.Clientset.AppsV1().Deployments(c.Namespace).Get(ctx, "rook-ceph-mon-a", metav1.GetOptions{})
+	_, err = c.context.Clientset.AppsV1().Deployments(c.Namespace).Get(c.ClusterInfo.Context, "rook-ceph-mon-a", metav1.GetOptions{})
 	assert.NoError(t, err)
 }
 
 func TestPersistMons(t *testing.T) {
 	clientset := test.New(t, 1)
 	ownerInfo := cephclient.NewMinimumOwnerInfoWithOwnerRef()
-	c := New(&clusterd.Context{Clientset: clientset}, "ns", cephv1.ClusterSpec{}, ownerInfo, &sync.Mutex{})
+	c := New(&clusterd.Context{Clientset: clientset}, "ns", cephv1.ClusterSpec{Annotations: cephv1.AnnotationsSpec{cephv1.KeyClusterMetadata: cephv1.Annotations{"key": "value"}}}, ownerInfo)
 	setCommonMonProperties(c, 1, cephv1.MonSpec{Count: 3, AllowMultiplePerNode: true}, "myversion")
 
 	// Persist mon a
@@ -275,7 +279,8 @@ func TestPersistMons(t *testing.T) {
 
 	cm, err := c.context.Clientset.CoreV1().ConfigMaps(c.Namespace).Get(context.TODO(), EndpointConfigMapName, metav1.GetOptions{})
 	assert.NoError(t, err)
-	assert.Equal(t, "a=1.2.3.1:6789", cm.Data[EndpointDataKey])
+	assert.Equal(t, "a=1.2.3.1:3300", cm.Data[EndpointDataKey])
+	assert.Equal(t, map[string]string{"key": "value"}, cm.Annotations)
 
 	// Persist mon b, and remove mon a for simply testing the configmap is updated
 	c.ClusterInfo.Monitors["b"] = &cephclient.MonInfo{Name: "b", Endpoint: "4.5.6.7:3300"}
@@ -291,10 +296,9 @@ func TestPersistMons(t *testing.T) {
 func TestSaveMonEndpoints(t *testing.T) {
 	ctx := context.TODO()
 	clientset := test.New(t, 1)
-	configDir, _ := ioutil.TempDir("", "")
-	defer os.RemoveAll(configDir)
+	configDir := t.TempDir()
 	ownerInfo := cephclient.NewMinimumOwnerInfoWithOwnerRef()
-	c := New(&clusterd.Context{Clientset: clientset, ConfigDir: configDir}, "ns", cephv1.ClusterSpec{}, ownerInfo, &sync.Mutex{})
+	c := New(&clusterd.Context{Clientset: clientset, ConfigDir: configDir}, "ns", cephv1.ClusterSpec{}, ownerInfo)
 	setCommonMonProperties(c, 1, cephv1.MonSpec{Count: 3, AllowMultiplePerNode: true}, "myversion")
 
 	// create the initial config map
@@ -303,7 +307,7 @@ func TestSaveMonEndpoints(t *testing.T) {
 
 	cm, err := c.context.Clientset.CoreV1().ConfigMaps(c.Namespace).Get(ctx, EndpointConfigMapName, metav1.GetOptions{})
 	assert.NoError(t, err)
-	assert.Equal(t, "a=1.2.3.1:6789", cm.Data[EndpointDataKey])
+	assert.Equal(t, "a=1.2.3.1:3300", cm.Data[EndpointDataKey])
 	assert.Equal(t, `{"node":{}}`, cm.Data[MappingKey])
 	assert.Equal(t, "-1", cm.Data[MaxMonIDKey])
 
@@ -339,10 +343,10 @@ func TestSaveMonEndpoints(t *testing.T) {
 
 func TestMaxMonID(t *testing.T) {
 	clientset := test.New(t, 1)
-	configDir, _ := ioutil.TempDir("", "")
-	defer os.RemoveAll(configDir)
+	configDir := t.TempDir()
 	ownerInfo := cephclient.NewMinimumOwnerInfoWithOwnerRef()
-	c := New(&clusterd.Context{Clientset: clientset, ConfigDir: configDir}, "ns", cephv1.ClusterSpec{}, ownerInfo, &sync.Mutex{})
+	c := New(&clusterd.Context{Clientset: clientset, ConfigDir: configDir}, "ns", cephv1.ClusterSpec{}, ownerInfo)
+	c.ClusterInfo = clienttest.CreateTestClusterInfo(1)
 
 	// when the configmap is not found, the maxMonID is -1
 	maxMonID, err := c.getStoredMaxMonID()
@@ -437,7 +441,7 @@ func TestWaitForQuorum(t *testing.T) {
 	assert.NoError(t, err)
 	requireAllInQuorum := false
 	expectedMons := []string{"a"}
-	clusterInfo := &cephclient.ClusterInfo{Namespace: namespace}
+	clusterInfo := cephclient.AdminTestClusterInfo("mycluster")
 	err = waitForQuorumWithMons(context, clusterInfo, expectedMons, 0, requireAllInQuorum)
 	assert.NoError(t, err)
 }
@@ -462,6 +466,63 @@ func TestMonFoundInQuorum(t *testing.T) {
 	assert.True(t, monFoundInQuorum("b", response))
 	assert.True(t, monFoundInQuorum("c", response))
 	assert.False(t, monFoundInQuorum("d", response))
+}
+
+func TestConfigureArbiter(t *testing.T) {
+	c := &Cluster{spec: cephv1.ClusterSpec{
+		Mon: cephv1.MonSpec{
+			StretchCluster: &cephv1.StretchClusterSpec{
+				Zones: []cephv1.StretchClusterZoneSpec{
+					{Name: "a", Arbiter: true},
+					{Name: "b"},
+					{Name: "c"},
+				},
+			},
+		},
+	}}
+	c.arbiterMon = "arb"
+	currentArbiter := c.arbiterMon
+	setNewTiebreaker := false
+	executor := &exectest.MockExecutor{
+		MockExecuteCommandWithOutput: func(command string, args ...string) (string, error) {
+			logger.Infof("%s %v", command, args)
+			if args[0] == "mon" {
+				if args[1] == "dump" {
+					return fmt.Sprintf(`{"tiebreaker_mon": "%s", "stretch_mode": true}`, currentArbiter), nil
+				}
+				if args[1] == "set_new_tiebreaker" {
+					assert.Equal(t, c.arbiterMon, args[2])
+					setNewTiebreaker = true
+					return "", nil
+				}
+			}
+			return "", fmt.Errorf("unrecognized output file command: %s %v", command, args)
+		},
+	}
+	c.context = &clusterd.Context{Clientset: test.New(t, 5), Executor: executor}
+	c.ClusterInfo = clienttest.CreateTestClusterInfo(5)
+
+	t.Run("no arbiter failover for old ceph version", func(t *testing.T) {
+		c.arbiterMon = "changed"
+		c.ClusterInfo.CephVersion = cephver.CephVersion{Major: 16, Minor: 2, Extra: 6}
+		err := c.ConfigureArbiter()
+		assert.NoError(t, err)
+		assert.False(t, setNewTiebreaker)
+	})
+	t.Run("stretch mode already configured - new", func(t *testing.T) {
+		c.arbiterMon = currentArbiter
+		c.ClusterInfo.CephVersion = cephver.CephVersion{Major: 16, Minor: 2, Extra: 7}
+		err := c.ConfigureArbiter()
+		assert.NoError(t, err)
+		assert.False(t, setNewTiebreaker)
+	})
+	t.Run("tiebreaker changed", func(t *testing.T) {
+		c.arbiterMon = "changed"
+		c.ClusterInfo.CephVersion = cephver.CephVersion{Major: 16, Minor: 2, Extra: 7}
+		err := c.ConfigureArbiter()
+		assert.NoError(t, err)
+		assert.True(t, setNewTiebreaker)
+	})
 }
 
 func TestFindAvailableZoneForStretchedMon(t *testing.T) {

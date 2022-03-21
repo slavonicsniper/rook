@@ -12,10 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Linux doesn't guarantee file ordering, so sort the files to make sure order is deterministic.
+# And in order to handle file paths with spaces, it's easiest to read the file names into an array.
+# Set locale `LC_ALL=C` because different OSes have different sort behavior;
+# `C` sorting order is based on the byte values,
+# Reference: https://blog.zhimingwang.org/macos-lc_collate-hunt
+LC_ALL=C
+export LC_ALL
+
 include build/makelib/common.mk
+include build/makelib/helm.mk
 
 .PHONY: all
 all: build
+.DEFAULT_GOAL := all
 
 # ====================================================================================
 # Build Options
@@ -37,7 +47,8 @@ SHELL := /bin/bash
 # Can be used or additional go build flags
 BUILDFLAGS ?=
 LDFLAGS ?=
-TAGS ?=
+# use the "ceph_preview" tag to consume go-ceph preview APIs, remove this once go-ceph 0.13 is out
+TAGS ?= ceph_preview
 
 # turn on more verbose build
 V ?= 0
@@ -58,11 +69,13 @@ endif
 
 # platforms
 PLATFORMS ?= $(ALL_PLATFORMS)
+# PLATFORMS_TO_BUILD_FOR controls for which platforms to build the rook binary for
+PLATFORMS_TO_BUILD_FOR ?= linux_amd64 linux_arm64
 SERVER_PLATFORMS := $(filter linux_%,$(PLATFORMS))
 CLIENT_PLATFORMS := $(filter-out linux_%,$(PLATFORMS))
 
 # server projects that we build on server platforms
-SERVER_PACKAGES = $(GO_PROJECT)/cmd/rook $(GO_PROJECT)/cmd/rookflex
+SERVER_PACKAGES = $(GO_PROJECT)/cmd/rook
 
 # tests packages that will be compiled into binaries
 TEST_PACKAGES = $(GO_PROJECT)/tests/integration
@@ -72,6 +85,9 @@ GO_PROJECT=github.com/rook/rook
 
 # inject the version number into the golang version package using the -X linker flag
 LDFLAGS += -X $(GO_PROJECT)/pkg/version.Version=$(VERSION)
+
+# CGO_ENABLED value
+CGO_ENABLED_VALUE=0
 
 # ====================================================================================
 # Setup projects
@@ -96,9 +112,6 @@ GO_TEST_FILTER=$(TESTFILTER)
 
 include build/makelib/golang.mk
 
-# setup helm charts
-include build/makelib/helm.mk
-
 # ====================================================================================
 # Targets
 
@@ -106,14 +119,15 @@ build.version:
 	@mkdir -p $(OUTPUT_DIR)
 	@echo "$(VERSION)" > $(OUTPUT_DIR)/version
 
-build.common: build.version helm.build mod.check
+build.common: build.version helm.build mod.check crds gen-rbac
 	@$(MAKE) go.init
 	@$(MAKE) go.validate
+	@$(MAKE) -C images/ceph list-image
 
 do.build.platform.%:
 	@$(MAKE) PLATFORM=$* go.build
 
-do.build.parallel: $(foreach p,$(PLATFORMS), do.build.platform.$(p))
+do.build.parallel: $(foreach p,$(PLATFORMS_TO_BUILD_FOR), do.build.platform.$(p))
 
 build: csv-clean build.common ## Only build for linux platform
 	@$(MAKE) go.build PLATFORM=linux_$(GOHOSTARCH)
@@ -176,6 +190,10 @@ csv-clean: ## Remove existing OLM files.
 crds: $(CONTROLLER_GEN) $(YQ)
 	@echo Updating CRD manifests
 	@build/crds/build-crds.sh $(CONTROLLER_GEN) $(YQ)
+
+gen-rbac: $(HELM) $(YQ) ## generate RBAC from Helm charts
+	@# output only stdout to the file; stderr for debugging should keep going to stderr
+	HELM=$(HELM) ./build/rbac/gen-common.sh
 
 .PHONY: all build.common cross.build.parallel
 .PHONY: build build.all install test check vet fmt codegen mod.check clean distclean prune

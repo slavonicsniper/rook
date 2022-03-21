@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/coreos/pkg/capnslog"
+	bktclient "github.com/kube-object-storage/lib-bucket-provisioner/pkg/client/clientset/versioned"
 	"github.com/pkg/errors"
 	rookclient "github.com/rook/rook/pkg/client/clientset/versioned"
 	"github.com/rook/rook/pkg/clusterd"
@@ -55,6 +56,7 @@ type K8sHelper struct {
 	remoteExecutor   *exec.RemotePodCommandExecutor
 	Clientset        *kubernetes.Clientset
 	RookClientset    *rookclient.Clientset
+	BucketClientset  *bktclient.Clientset
 	RunningInCluster bool
 	T                func() *testing.T
 }
@@ -93,13 +95,17 @@ func CreateK8sHelper(t func() *testing.T) (*K8sHelper, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get rook clientset. %+v", err)
 	}
+	bucketClientset, err := bktclient.NewForConfig(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get lib-bucket-provisioner clientset. %+v", err)
+	}
 
 	remoteExecutor := &exec.RemotePodCommandExecutor{
 		ClientSet:  clientset,
 		RestClient: config,
 	}
 
-	h := &K8sHelper{executor: executor, Clientset: clientset, RookClientset: rookClientset, T: t, remoteExecutor: remoteExecutor}
+	h := &K8sHelper{executor: executor, Clientset: clientset, RookClientset: rookClientset, BucketClientset: bucketClientset, T: t, remoteExecutor: remoteExecutor}
 	if strings.Contains(config.Host, "//10.") {
 		h.RunningInCluster = true
 	}
@@ -772,53 +778,6 @@ func (k8sh *K8sHelper) GetVolumeResourceName(namespace, pvcName string) (string,
 	return pvc.Spec.VolumeName, nil
 }
 
-// IsVolumeResourcePresent returns true if Volume resource is present
-func (k8sh *K8sHelper) IsVolumeResourcePresent(namespace, volumeName string) bool {
-	err := k8sh.waitForVolume(namespace, volumeName, true)
-	if err != nil {
-		k8slogger.Error(err.Error())
-		return false
-	}
-	return true
-}
-
-// IsVolumeResourceAbsent returns true if the Volume resource is deleted/absent within 90s else returns false
-func (k8sh *K8sHelper) IsVolumeResourceAbsent(namespace, volumeName string) bool {
-
-	err := k8sh.waitForVolume(namespace, volumeName, false)
-	if err != nil {
-		k8slogger.Error(err.Error())
-		return false
-	}
-	return true
-}
-
-func (k8sh *K8sHelper) waitForVolume(namespace, volumeName string, exist bool) error {
-
-	action := "exist"
-	if !exist {
-		action = "not " + action
-	}
-
-	for i := 0; i < 10; i++ {
-		isExist, err := k8sh.isVolumeExist(namespace, volumeName)
-		if err != nil {
-			return fmt.Errorf("Errors encountered while getting Volume %s/%s: %v", namespace, volumeName, err)
-		}
-		if isExist == exist {
-			return nil
-		}
-
-		k8slogger.Infof("waiting for Volume %s in namespace %s to %s", volumeName, namespace, action)
-		time.Sleep(RetryInterval * time.Second)
-	}
-
-	k8sh.printVolumes(namespace, volumeName)
-	k8sh.PrintPVs(false /*detailed*/)
-	k8sh.PrintPVCs(namespace, false /*detailed*/)
-	return fmt.Errorf("timeout for Volume %s in namespace %s wait to %s", volumeName, namespace, action)
-}
-
 func (k8sh *K8sHelper) PrintPVs(detailed bool) {
 	ctx := context.TODO()
 	pvs, err := k8sh.Clientset.CoreV1().PersistentVolumes().List(ctx, metav1.ListOptions{})
@@ -893,32 +852,6 @@ func (k8sh *K8sHelper) PrintStorageClasses(detailed bool) {
 		}
 		logger.Infof("Found StorageClasses: %v", names)
 	}
-}
-
-func (k8sh *K8sHelper) printVolumes(namespace, desiredVolume string) {
-	ctx := context.TODO()
-	volumes, err := k8sh.RookClientset.RookV1alpha2().Volumes(namespace).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		logger.Infof("failed to list volumes in ns %s. %+v", namespace, err)
-	}
-
-	var names []string
-	for _, volume := range volumes.Items {
-		names = append(names, volume.Name)
-	}
-	logger.Infof("looking for volume %s in namespace %s. Found volumes: %v", desiredVolume, namespace, names)
-}
-
-func (k8sh *K8sHelper) isVolumeExist(namespace, name string) (bool, error) {
-	ctx := context.TODO()
-	_, err := k8sh.RookClientset.RookV1alpha2().Volumes(namespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		if kerrors.IsNotFound(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, nil
 }
 
 func (k8sh *K8sHelper) GetPodNamesForApp(appName, namespace string) ([]string, error) {

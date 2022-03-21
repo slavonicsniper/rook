@@ -19,11 +19,9 @@ package mon
 import (
 	"context"
 	"strings"
-	"sync"
 	"testing"
 
 	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
-	"github.com/rook/rook/pkg/apis/rook.io"
 	"github.com/rook/rook/pkg/clusterd"
 	clienttest "github.com/rook/rook/pkg/daemon/ceph/client/test"
 	cephver "github.com/rook/rook/pkg/operator/ceph/version"
@@ -38,10 +36,10 @@ import (
 func TestNodeAffinity(t *testing.T) {
 	ctx := context.TODO()
 	clientset := test.New(t, 4)
-	c := New(&clusterd.Context{Clientset: clientset}, "ns", cephv1.ClusterSpec{}, &k8sutil.OwnerInfo{}, &sync.Mutex{})
+	c := New(&clusterd.Context{Clientset: clientset}, "ns", cephv1.ClusterSpec{}, &k8sutil.OwnerInfo{})
 	setCommonMonProperties(c, 0, cephv1.MonSpec{Count: 3, AllowMultiplePerNode: true}, "myversion")
 
-	c.spec.Placement = map[rook.KeyType]cephv1.Placement{}
+	c.spec.Placement = map[cephv1.KeyType]cephv1.Placement{}
 	c.spec.Placement[cephv1.KeyMon] = cephv1.Placement{NodeAffinity: &v1.NodeAffinity{
 		RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
 			NodeSelectorTerms: []v1.NodeSelectorTerm{
@@ -87,7 +85,7 @@ func TestHostNetworkSameNode(t *testing.T) {
 	c.ClusterInfo = clienttest.CreateTestClusterInfo(1)
 
 	// start a basic cluster
-	_, err = c.Start(c.ClusterInfo, c.rookVersion, cephver.Nautilus, c.spec)
+	_, err = c.Start(c.ClusterInfo, c.rookVersion, cephver.Octopus, c.spec)
 	assert.Error(t, err)
 }
 
@@ -105,7 +103,7 @@ func TestPodMemory(t *testing.T) {
 	c := newCluster(context, namespace, true, r)
 	c.ClusterInfo = clienttest.CreateTestClusterInfo(1)
 	// start a basic cluster
-	_, err = c.Start(c.ClusterInfo, c.rookVersion, cephver.Nautilus, c.spec)
+	_, err = c.Start(c.ClusterInfo, c.rookVersion, cephver.Octopus, c.spec)
 	assert.NoError(t, err)
 
 	// Test REQUEST == LIMIT
@@ -121,7 +119,7 @@ func TestPodMemory(t *testing.T) {
 	c = newCluster(context, namespace, true, r)
 	c.ClusterInfo = clienttest.CreateTestClusterInfo(1)
 	// start a basic cluster
-	_, err = c.Start(c.ClusterInfo, c.rookVersion, cephver.Nautilus, c.spec)
+	_, err = c.Start(c.ClusterInfo, c.rookVersion, cephver.Octopus, c.spec)
 	assert.NoError(t, err)
 
 	// Test LIMIT != REQUEST but obviously LIMIT > REQUEST
@@ -137,7 +135,7 @@ func TestPodMemory(t *testing.T) {
 	c = newCluster(context, namespace, true, r)
 	c.ClusterInfo = clienttest.CreateTestClusterInfo(1)
 	// start a basic cluster
-	_, err = c.Start(c.ClusterInfo, c.rookVersion, cephver.Nautilus, c.spec)
+	_, err = c.Start(c.ClusterInfo, c.rookVersion, cephver.Octopus, c.spec)
 	assert.NoError(t, err)
 
 	// Test valid case where pod resource is set appropriately
@@ -153,7 +151,7 @@ func TestPodMemory(t *testing.T) {
 	c = newCluster(context, namespace, true, r)
 	c.ClusterInfo = clienttest.CreateTestClusterInfo(1)
 	// start a basic cluster
-	_, err = c.Start(c.ClusterInfo, c.rookVersion, cephver.Nautilus, c.spec)
+	_, err = c.Start(c.ClusterInfo, c.rookVersion, cephver.Octopus, c.spec)
 	assert.NoError(t, err)
 
 	// Test no resources were specified on the pod
@@ -161,14 +159,14 @@ func TestPodMemory(t *testing.T) {
 	c = newCluster(context, namespace, true, r)
 	c.ClusterInfo = clienttest.CreateTestClusterInfo(1)
 	// start a basic cluster
-	_, err = c.Start(c.ClusterInfo, c.rookVersion, cephver.Nautilus, c.spec)
+	_, err = c.Start(c.ClusterInfo, c.rookVersion, cephver.Octopus, c.spec)
 	assert.NoError(t, err)
 
 }
 
 func TestHostNetwork(t *testing.T) {
 	clientset := test.New(t, 3)
-	c := New(&clusterd.Context{Clientset: clientset}, "ns", cephv1.ClusterSpec{}, &k8sutil.OwnerInfo{}, &sync.Mutex{})
+	c := New(&clusterd.Context{Clientset: clientset}, "ns", cephv1.ClusterSpec{}, &k8sutil.OwnerInfo{})
 	setCommonMonProperties(c, 0, cephv1.MonSpec{Count: 3, AllowMultiplePerNode: true}, "myversion")
 
 	c.spec.Network.HostNetwork = true
@@ -214,20 +212,35 @@ func TestGetNodeInfoFromNode(t *testing.T) {
 	assert.NotNil(t, node)
 
 	node.Status = v1.NodeStatus{}
-	node.Status.Addresses = []v1.NodeAddress{
-		{
-			Type:    v1.NodeExternalIP,
-			Address: "1.1.1.1",
-		},
-	}
+	node.Status.Addresses = []v1.NodeAddress{}
 
 	var info *MonScheduleInfo
 	_, err = getNodeInfoFromNode(*node)
 	assert.NotNil(t, err)
 
-	node.Status.Addresses[0].Type = v1.NodeInternalIP
-	node.Status.Addresses[0].Address = "172.17.0.1"
+	// With internalIP and externalIP
+	node.Status.Addresses = []v1.NodeAddress{
+		{
+			Type:    v1.NodeExternalIP,
+			Address: "1.1.1.1",
+		},
+		{
+			Type:    v1.NodeInternalIP,
+			Address: "172.17.0.1",
+		},
+	}
 	info, err = getNodeInfoFromNode(*node)
 	assert.NoError(t, err)
-	assert.Equal(t, "172.17.0.1", info.Address)
+	assert.Equal(t, "172.17.0.1", info.Address) // Must return the internalIP
+
+	// With externalIP only
+	node.Status.Addresses = []v1.NodeAddress{
+		{
+			Type:    v1.NodeExternalIP,
+			Address: "1.2.3.4",
+		},
+	}
+	info, err = getNodeInfoFromNode(*node)
+	assert.NoError(t, err)
+	assert.Equal(t, "1.2.3.4", info.Address)
 }

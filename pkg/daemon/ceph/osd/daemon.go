@@ -126,13 +126,7 @@ func killCephOSDProcess(context *clusterd.Context, lvPath string) error {
 
 	// shut down the osd-ceph process so that lvm release does not show device in use error.
 	if pid != "" {
-		// The OSD needs to exit as quickly as possible in order for the IO requests
-		// to be redirected to other OSDs in the cluster. The OSD is designed to tolerate failures
-		// of any kind, including power loss or kill -9. The upstream Ceph tests have for many years
-		// been testing with kill -9 so this is expected to be safe. There is a fix upstream Ceph that will
-		// improve the shutdown time of the OSD. For cleanliness we should consider removing the -9
-		// once it is backported to Nautilus: https://github.com/ceph/ceph/pull/31677.
-		if err := context.Executor.ExecuteCommand("kill", "-9", pid); err != nil {
+		if err := context.Executor.ExecuteCommand("kill", pid); err != nil {
 			return errors.Wrap(err, "failed to kill ceph-osd process")
 		}
 	}
@@ -180,7 +174,7 @@ func Provision(context *clusterd.Context, agent *OsdAgent, crushLocation, topolo
 
 	// set the initial orchestration status
 	status := oposd.OrchestrationStatus{Status: oposd.OrchestrationStatusOrchestrating}
-	oposd.UpdateNodeStatus(agent.kv, agent.nodeName, status)
+	oposd.UpdateNodeOrPVCStatus(agent.clusterInfo.Context, agent.kv, agent.nodeName, status)
 
 	if err := client.WriteCephConfig(context, agent.clusterInfo); err != nil {
 		return errors.Wrap(err, "failed to generate ceph config")
@@ -221,7 +215,7 @@ func Provision(context *clusterd.Context, agent *OsdAgent, crushLocation, topolo
 
 	// orchestration is about to start, update the status
 	status = oposd.OrchestrationStatus{Status: oposd.OrchestrationStatusOrchestrating, PvcBackedOSD: agent.pvcBacked}
-	oposd.UpdateNodeStatus(agent.kv, agent.nodeName, status)
+	oposd.UpdateNodeOrPVCStatus(agent.clusterInfo.Context, agent.kv, agent.nodeName, status)
 
 	// start the desired OSDs on devices
 	logger.Infof("configuring osd devices: %+v", devices)
@@ -238,7 +232,7 @@ func Provision(context *clusterd.Context, agent *OsdAgent, crushLocation, topolo
 	if len(deviceOSDs) == 0 {
 		logger.Warningf("skipping OSD configuration as no devices matched the storage settings for this node %q", agent.nodeName)
 		status = oposd.OrchestrationStatus{OSDs: deviceOSDs, Status: oposd.OrchestrationStatusCompleted, PvcBackedOSD: agent.pvcBacked}
-		oposd.UpdateNodeStatus(agent.kv, agent.nodeName, status)
+		oposd.UpdateNodeOrPVCStatus(agent.clusterInfo.Context, agent.kv, agent.nodeName, status)
 		return nil
 	}
 
@@ -278,7 +272,7 @@ func Provision(context *clusterd.Context, agent *OsdAgent, crushLocation, topolo
 
 	// orchestration is completed, update the status
 	status = oposd.OrchestrationStatus{OSDs: deviceOSDs, Status: oposd.OrchestrationStatusCompleted, PvcBackedOSD: agent.pvcBacked}
-	oposd.UpdateNodeStatus(agent.kv, agent.nodeName, status)
+	oposd.UpdateNodeOrPVCStatus(agent.clusterInfo.Context, agent.kv, agent.nodeName, status)
 
 	return nil
 }
@@ -308,8 +302,15 @@ func getAvailableDevices(context *clusterd.Context, agent *OsdAgent) (*DeviceOsd
 			// Allow further inspection of that device before skipping it
 			if device.Filesystem == "crypto_LUKS" && agent.pvcBacked {
 				if isCephEncryptedBlock(context, agent.clusterInfo.FSID, device.Name) {
-					logger.Infof("encrypted disk %q is an OSD part of this cluster, considering it", device.Name)
+					logger.Infof("encrypted disk %q is an OSD part of this cluster, skipping it", device.Name)
+				} else {
+					logger.Infof("encrypted disk %q is unknown, skipping it", device.Name)
 				}
+				// We must skip so that the device is not marked as available, but will later be
+				// picked up by the GetCephVolumeRawOSDs() call.
+				// This handles the case where the OSD deployment has been removed and the prepare
+				// job kicks in again to re-deploy the OSD.
+				continue
 			} else {
 				logger.Infof("skipping device %q because it contains a filesystem %q", device.Name, device.Filesystem)
 				continue
@@ -317,13 +318,6 @@ func getAvailableDevices(context *clusterd.Context, agent *OsdAgent) (*DeviceOsd
 		}
 
 		if device.Type == sys.PartType {
-			// If we detect a partition we have to make sure that ceph-volume will be able to consume it
-			// ceph-volume version 14.2.8 has the right code to support partitions
-			if !agent.clusterInfo.CephVersion.IsAtLeast(cephVolumeRawModeMinCephVersion) {
-				logger.Infof("skipping device %q because it is a partition and ceph version is too old, you need at least ceph %q", device.Name, cephVolumeRawModeMinCephVersion.String())
-				continue
-			}
-
 			device, err := clusterd.PopulateDeviceUdevInfo(device.Name, context.Executor, device)
 			if err != nil {
 				logger.Errorf("failed to get udev info of partition %q. %v", device.Name, err)

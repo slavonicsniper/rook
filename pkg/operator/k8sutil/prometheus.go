@@ -59,8 +59,7 @@ func GetServiceMonitor(filePath string) (*monitoringv1.ServiceMonitor, error) {
 }
 
 // CreateOrUpdateServiceMonitor creates serviceMonitor object or an error
-func CreateOrUpdateServiceMonitor(serviceMonitorDefinition *monitoringv1.ServiceMonitor) (*monitoringv1.ServiceMonitor, error) {
-	ctx := context.TODO()
+func CreateOrUpdateServiceMonitor(ctx context.Context, serviceMonitorDefinition *monitoringv1.ServiceMonitor) (*monitoringv1.ServiceMonitor, error) {
 	name := serviceMonitorDefinition.GetName()
 	namespace := serviceMonitorDefinition.GetNamespace()
 	logger.Debugf("creating servicemonitor %s", name)
@@ -80,6 +79,7 @@ func CreateOrUpdateServiceMonitor(serviceMonitorDefinition *monitoringv1.Service
 		return nil, fmt.Errorf("failed to retrieve servicemonitor. %v", err)
 	}
 	oldSm.Spec = serviceMonitorDefinition.Spec
+	oldSm.ObjectMeta.Labels = serviceMonitorDefinition.ObjectMeta.Labels
 	sm, err := client.MonitoringV1().ServiceMonitors(namespace).Update(ctx, oldSm, metav1.UpdateOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to update servicemonitor. %v", err)
@@ -102,8 +102,7 @@ func GetPrometheusRule(ruleFilePath string) (*monitoringv1.PrometheusRule, error
 }
 
 // CreateOrUpdatePrometheusRule creates a prometheusRule object or an error
-func CreateOrUpdatePrometheusRule(prometheusRule *monitoringv1.PrometheusRule) (*monitoringv1.PrometheusRule, error) {
-	ctx := context.TODO()
+func CreateOrUpdatePrometheusRule(ctx context.Context, prometheusRule *monitoringv1.PrometheusRule) (*monitoringv1.PrometheusRule, error) {
 	name := prometheusRule.GetName()
 	namespace := prometheusRule.GetNamespace()
 	logger.Debugf("creating prometheusRule %s", name)
@@ -123,6 +122,7 @@ func CreateOrUpdatePrometheusRule(prometheusRule *monitoringv1.PrometheusRule) (
 			return nil, fmt.Errorf("failed to get prometheusRule object. %v", err)
 		}
 		promRule.Spec = prometheusRule.Spec
+		promRule.ObjectMeta.Labels = prometheusRule.ObjectMeta.Labels
 		_, err = client.MonitoringV1().PrometheusRules(namespace).Update(ctx, promRule, metav1.UpdateOptions{})
 		if err != nil {
 			return nil, fmt.Errorf("failed to update prometheusRule. %v", err)

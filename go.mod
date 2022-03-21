@@ -3,45 +3,40 @@ module github.com/rook/rook
 go 1.16
 
 require (
-	github.com/aws/aws-sdk-go v1.35.24
+	github.com/IBM/keyprotect-go-client v0.7.0
+	github.com/aws/aws-sdk-go v1.37.19
 	github.com/banzaicloud/k8s-objectmatcher v1.1.0
-	github.com/ceph/go-ceph v0.10.1-0.20210729101705-11f319727ffb
+	github.com/ceph/go-ceph v0.12.0
 	github.com/coreos/pkg v0.0.0-20180928190104-399ea9e2e55f
-	github.com/csi-addons/volume-replication-operator v0.1.1-0.20210525040814-ab575a2879fb
-	github.com/davecgh/go-spew v1.1.1
-	github.com/ghodss/yaml v1.0.1-0.20190212211648-25d852aebe32
 	github.com/go-ini/ini v1.51.1
 	github.com/google/go-cmp v0.5.5
 	github.com/google/uuid v1.1.2
-	github.com/hashicorp/vault/api v1.0.5-0.20200902155336-f9d5ce5a171a
+	github.com/hashicorp/vault v1.8.5
+	github.com/hashicorp/vault-plugin-secrets-kv v0.9.0
+	github.com/hashicorp/vault/api v1.1.2-0.20210713235431-1fc8af4c041f
+	github.com/hashicorp/vault/sdk v0.2.2-0.20211101151547-6654f4b913f9
 	github.com/k8snetworkplumbingwg/network-attachment-definition-client v1.1.0
-	github.com/kube-object-storage/lib-bucket-provisioner v0.0.0-20210818162813-3eee31c01875
+	github.com/kube-object-storage/lib-bucket-provisioner v0.0.0-20220105185820-c1da9586e05b
 	github.com/libopenstorage/secrets v0.0.0-20210709082113-dde442ea20ec
+	github.com/openshift/api v0.0.0-20210105115604-44119421ec6b
 	github.com/openshift/cluster-api v0.0.0-20191129101638-b09907ac6668
 	github.com/openshift/machine-api-operator v0.2.1-0.20190903202259-474e14e4965a
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring v0.46.0
 	github.com/prometheus-operator/prometheus-operator/pkg/client v0.46.0
-	github.com/spf13/cobra v1.1.1
+	github.com/spf13/cobra v1.1.3
 	github.com/spf13/pflag v1.0.5
 	github.com/stretchr/testify v1.7.0
-	github.com/tevino/abool v1.2.0
-	github.com/yanniszark/go-nodetool v0.0.0-20191206125106-cd8f91fa16be
-	golang.org/x/sync v0.0.0-20201207232520-09787c993a3a
+	github.com/tencentcloud/tencentcloud-sdk-go v3.0.171+incompatible // indirect
+	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c
 	gopkg.in/ini.v1 v1.57.0
 	gopkg.in/yaml.v2 v2.4.0
-	k8s.io/api v0.21.2
-	k8s.io/apiextensions-apiserver v0.21.1
-	k8s.io/apimachinery v0.21.2
-	k8s.io/apiserver v0.21.1
-	k8s.io/client-go v0.21.2
+	k8s.io/api v0.22.2
+	k8s.io/apimachinery v0.22.2
+	k8s.io/client-go v0.22.2
 	k8s.io/cloud-provider v0.21.1
-	k8s.io/component-helpers v0.21.1
-	k8s.io/kube-controller-manager v0.21.1
-	k8s.io/utils v0.0.0-20210527160623-6fdb442a123b
-	sigs.k8s.io/controller-runtime v0.9.0
-	sigs.k8s.io/kustomize/kyaml v0.10.17
-	sigs.k8s.io/sig-storage-lib-external-provisioner/v6 v6.1.0
+	k8s.io/utils v0.0.0-20210819203725-bdf08cb9a70a
+	sigs.k8s.io/controller-runtime v0.10.2
 )
 
 replace (

@@ -158,6 +158,7 @@ func rawUdevBlockMonitor(c chan string, matches, exclusions []string) {
 		logger.Warningf("Cannot open udevadm stdout: %v", err)
 		return
 	}
+	defer stdout.Close()
 
 	err = cmd.Start()
 	if err != nil {
@@ -366,7 +367,7 @@ func updateDeviceCM(clusterdContext *clusterd.Context) error {
 		}
 
 		// Get the discover daemon pod details to attach the owner reference to the config map
-		discoverPod, err := k8sutil.GetRunningPod(clusterdContext.Clientset)
+		discoverPod, err := k8sutil.GetRunningPod(ctx, clusterdContext.Clientset)
 		if err != nil {
 			logger.Warningf("failed to get discover pod to set ownerref. %+v", err)
 		} else {

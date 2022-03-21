@@ -25,15 +25,15 @@ import (
 	cephclient "github.com/rook/rook/pkg/daemon/ceph/client"
 )
 
-// ValidatePool Validate the pool arguments
-func ValidatePool(context *clusterd.Context, clusterInfo *client.ClusterInfo, clusterSpec *cephv1.ClusterSpec, p *cephv1.CephBlockPool) error {
+// validatePool Validate the pool arguments
+func validatePool(context *clusterd.Context, clusterInfo *client.ClusterInfo, clusterSpec *cephv1.ClusterSpec, p *cephv1.CephBlockPool) error {
 	if p.Name == "" {
 		return errors.New("missing name")
 	}
 	if p.Namespace == "" {
 		return errors.New("missing namespace")
 	}
-	if err := ValidatePoolSpec(context, clusterInfo, clusterSpec, &p.Spec); err != nil {
+	if err := ValidatePoolSpec(context, clusterInfo, clusterSpec, &p.Spec.PoolSpec); err != nil {
 		return err
 	}
 	return nil
@@ -139,11 +139,19 @@ func ValidatePoolSpec(context *clusterd.Context, clusterInfo *cephclient.Cluster
 
 	// validate pool compression mode if specified
 	if p.CompressionMode != "" {
-		switch p.CompressionMode {
-		case "none", "passive", "aggressive", "force":
-			break
-		default:
-			return errors.Errorf("unrecognized compression mode %q", p.CompressionMode)
+		logger.Warning("compressionMode is DEPRECATED, use Parameters instead")
+	}
+
+	// Test the same for Parameters
+	if p.Parameters != nil {
+		compression, ok := p.Parameters[client.CompressionModeProperty]
+		if ok && compression != "" {
+			switch compression {
+			case "none", "passive", "aggressive", "force":
+				break
+			default:
+				return errors.Errorf("failed to validate pool spec unknown compression mode %q", compression)
+			}
 		}
 	}
 
@@ -173,8 +181,7 @@ func ValidatePoolSpec(context *clusterd.Context, clusterInfo *cephclient.Cluster
 }
 
 // validateDeviceClasses validates the primary and secondary device classes in the HybridStorageSpec
-func validateDeviceClasses(context *clusterd.Context, clusterInfo *cephclient.ClusterInfo,
-	p *cephv1.PoolSpec) error {
+func validateDeviceClasses(context *clusterd.Context, clusterInfo *cephclient.ClusterInfo, p *cephv1.PoolSpec) error {
 
 	primaryDeviceClass := p.Replicated.HybridStorage.PrimaryDeviceClass
 	secondaryDeviceClass := p.Replicated.HybridStorage.SecondaryDeviceClass
@@ -193,8 +200,7 @@ func validateDeviceClasses(context *clusterd.Context, clusterInfo *cephclient.Cl
 }
 
 // validateDeviceClassOSDs validates that the device class should have atleast one OSD
-func validateDeviceClassOSDs(context *clusterd.Context, clusterInfo *cephclient.ClusterInfo,
-	deviceClassName string) error {
+func validateDeviceClassOSDs(context *clusterd.Context, clusterInfo *cephclient.ClusterInfo, deviceClassName string) error {
 	deviceClassOSDs, err := cephclient.GetDeviceClassOSDs(context, clusterInfo, deviceClassName)
 	if err != nil {
 		return errors.Wrapf(err, "failed to get osds for the device class %q", deviceClassName)

@@ -19,11 +19,13 @@ package cluster
 
 import (
 	"context"
+	"strings"
 
 	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
 	"github.com/rook/rook/pkg/clusterd"
 	cephclient "github.com/rook/rook/pkg/daemon/ceph/client"
 	discoverDaemon "github.com/rook/rook/pkg/daemon/discover"
+	opcontroller "github.com/rook/rook/pkg/operator/ceph/controller"
 	"github.com/rook/rook/pkg/operator/k8sutil"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -93,8 +95,8 @@ func (c *clientCluster) onK8sNode(object runtime.Object) bool {
 
 	logger.Debugf("node %q is ready, checking if it can run OSDs", node.Name)
 	nodesCheckedForReconcile.Insert(node.Name)
-	valid, _ := k8sutil.ValidNode(*node, cephv1.GetOSDPlacement(cluster.Spec.Placement))
-	if valid {
+	err := k8sutil.ValidNode(*node, cephv1.GetOSDPlacement(cluster.Spec.Placement))
+	if err == nil {
 		nodeName := node.Name
 		hostname, ok := node.Labels[v1.LabelHostname]
 		if ok && hostname != "" {
@@ -104,9 +106,13 @@ func (c *clientCluster) onK8sNode(object runtime.Object) bool {
 		// Is the node in the CRUSH map already?
 		// If so we don't need to reconcile, this is done to avoid double reconcile on operator restart
 		// Assume the admin key since we are watching for node status to create OSDs
-		clusterInfo := cephclient.AdminClusterInfo(cluster.Namespace)
+		clusterInfo := cephclient.AdminClusterInfo(cluster.Namespace, cluster.Name)
 		osds, err := cephclient.GetOSDOnHost(c.context, clusterInfo, nodeName)
 		if err != nil {
+			if strings.Contains(err.Error(), opcontroller.UninitializedCephConfigError) {
+				logger.Debug(opcontroller.OperatorNotInitializedMessage)
+				return false
+			}
 			// If it fails, this might be due to the the operator just starting and catching an add event for that node
 			logger.Debugf("failed to get osds on node %q, assume reconcile is necessary", nodeName)
 			return true

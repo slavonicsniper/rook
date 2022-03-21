@@ -38,14 +38,16 @@ type TestCephSettings struct {
 	UseCrashPruner              bool
 	MultipleMgrs                bool
 	SkipOSDCreation             bool
-	UseCSI                      bool
 	EnableDiscovery             bool
 	EnableAdmissionController   bool
 	IsExternal                  bool
 	SkipClusterCleanup          bool
 	SkipCleanupPolicy           bool
 	DirectMountToolbox          bool
+	ConnectionsEncrypted        bool
+	ConnectionsCompressed       bool
 	EnableVolumeReplication     bool
+	ChangeHostName              bool
 	RookVersion                 string
 	CephVersion                 cephv1.CephVersionSpec
 }
@@ -63,25 +65,22 @@ func (s *TestCephSettings) ApplyEnvVars() {
 }
 
 func (s *TestCephSettings) readManifest(filename string) string {
-	manifest := readManifest("ceph", filename)
+	manifest := readManifest(filename)
 	return replaceNamespaces(manifest, manifest, s.OperatorNamespace, s.Namespace)
 }
 
-func (s *TestCephSettings) readManifestFromGithub(filename string) string {
-	return s.readManifestFromGithubWithClusterNamespace(filename, s.Namespace)
+func (s *TestCephSettings) readManifestFromGitHub(filename string) string {
+	return s.readManifestFromGitHubWithClusterNamespace(filename, s.Namespace)
 }
 
-func (s *TestCephSettings) readManifestFromGithubWithClusterNamespace(filename, clusterNamespace string) string {
-	manifest := readManifestFromGithub(s.RookVersion, "ceph", filename)
+func (s *TestCephSettings) readManifestFromGitHubWithClusterNamespace(filename, clusterNamespace string) string {
+	manifest := readManifestFromGitHub(s.RookVersion, filename)
 	return replaceNamespaces(filename, manifest, s.OperatorNamespace, clusterNamespace)
 }
 
 func (s *TestCephSettings) replaceOperatorSettings(manifest string) string {
 	manifest = strings.ReplaceAll(manifest, `# CSI_LOG_LEVEL: "0"`, `CSI_LOG_LEVEL: "5"`)
 	manifest = strings.ReplaceAll(manifest, `ROOK_ENABLE_DISCOVERY_DAEMON: "false"`, fmt.Sprintf(`ROOK_ENABLE_DISCOVERY_DAEMON: "%t"`, s.EnableDiscovery))
-	manifest = strings.ReplaceAll(manifest, `ROOK_ENABLE_FLEX_DRIVER: "false"`, fmt.Sprintf(`ROOK_ENABLE_FLEX_DRIVER: "%t"`, !s.UseCSI))
-	manifest = strings.ReplaceAll(manifest, `ROOK_CSI_ENABLE_CEPHFS: "true"`, fmt.Sprintf(`ROOK_CSI_ENABLE_CEPHFS: "%t"`, s.UseCSI))
-	manifest = strings.ReplaceAll(manifest, `ROOK_CSI_ENABLE_RBD: "true"`, fmt.Sprintf(`ROOK_CSI_ENABLE_RBD: "%t"`, s.UseCSI))
 	manifest = strings.ReplaceAll(manifest, `CSI_ENABLE_VOLUME_REPLICATION: "false"`, fmt.Sprintf(`CSI_ENABLE_VOLUME_REPLICATION: "%t"`, s.EnableVolumeReplication))
 	return manifest
 }

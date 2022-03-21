@@ -17,12 +17,12 @@ limitations under the License.
 package kms
 
 import (
-	"os"
 	"strings"
 
 	"github.com/libopenstorage/secrets/vault"
 	"github.com/libopenstorage/secrets/vault/utils"
 	"github.com/pkg/errors"
+	"github.com/rook/rook/pkg/clusterd"
 
 	"github.com/hashicorp/vault/api"
 )
@@ -33,16 +33,38 @@ const (
 	kvVersion2   = "kv-v2"
 )
 
+// vaultClient returns a vault client, also used in unit tests to mock the client
+var vaultClient = newVaultClient
+
 // newVaultClient returns a vault client, there is no need for any secretConfig validation
 // Since this is called after an already validated call InitVault()
-func newVaultClient(secretConfig map[string]string) (*api.Client, error) {
+func newVaultClient(clusterdContext *clusterd.Context, namespace string, secretConfig map[string]string) (*api.Client, error) {
 	// DefaultConfig uses the environment variables if present.
 	config := api.DefaultConfig()
 
+	// Always use a new map otherwise the map will mutate and subsequent calls will fail since the
+	// TLS content has been altered by the TLS config in vaultClient()
+	localSecretConfig := make(map[string]string)
+	for k, v := range secretConfig {
+		localSecretConfig[k] = v
+	}
+
 	// Convert map string to map interface
 	c := make(map[string]interface{})
-	for k, v := range secretConfig {
+	for k, v := range localSecretConfig {
 		c[k] = v
+	}
+
+	// Populate TLS config
+	newConfigWithTLS, removeCertFiles, err := configTLS(clusterdContext, namespace, localSecretConfig)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to initialize vault tls configuration")
+	}
+	defer removeCertFiles()
+
+	// Populate TLS config
+	for key, value := range newConfigWithTLS {
+		c[key] = string(value)
 	}
 
 	// Configure TLS
@@ -56,20 +78,35 @@ func newVaultClient(secretConfig map[string]string) (*api.Client, error) {
 		return nil, err
 	}
 
-	// Set the token if provided, token should be set by ValidateConnectionDetails() if applicable
-	// api.NewClient() already looks up the token from the environment but we need to set it here and remove potential malformed tokens
-	client.SetToken(strings.TrimSuffix(os.Getenv(api.EnvVaultToken), "\n"))
-
 	// Set Vault address, was validated by ValidateConnectionDetails()
-	err = client.SetAddress(strings.TrimSuffix(secretConfig[api.EnvVaultAddress], "\n"))
+	err = client.SetAddress(strings.TrimSuffix(localSecretConfig[api.EnvVaultAddress], "\n"))
 	if err != nil {
 		return nil, err
 	}
 
+	// Set the namespace if the config has a namespace
+	if backendPath := GetParam(secretConfig, api.EnvVaultNamespace); backendPath != "" {
+		client.SetNamespace(secretConfig[api.EnvVaultNamespace])
+	}
+
+	// Configure the authentication method, either Token or Kubernetes.
+	// Both return a token
+	token, _, err := utils.Authenticate(client, c)
+	if err != nil {
+		if authType := GetParam(secretConfig, vault.AuthMethod); authType == vault.AuthMethodKubernetes {
+			return nil, errors.Wrap(err, "failed to get vault authentication token for kubernetes authentication (missing Service Account?)")
+		}
+		return nil, errors.Wrap(err, "failed to get vault authentication token")
+	}
+
+	// Set the token if provided, token should be set by ValidateConnectionDetails() if applicable
+	// api.NewClient() already looks up the token from the environment but we need to set it here and remove potential malformed tokens
+	client.SetToken(token)
+
 	return client, nil
 }
 
-func BackendVersion(secretConfig map[string]string) (string, error) {
+func BackendVersion(clusterdContext *clusterd.Context, namespace string, secretConfig map[string]string) (string, error) {
 	v1 := "v1"
 	v2 := "v2"
 
@@ -88,7 +125,7 @@ func BackendVersion(secretConfig map[string]string) (string, error) {
 		return v2, nil
 	default:
 		// Initialize Vault client
-		vaultClient, err := newVaultClient(secretConfig)
+		vaultClient, err := vaultClient(clusterdContext, namespace, secretConfig)
 		if err != nil {
 			return "", errors.Wrap(err, "failed to initialize vault client")
 		}

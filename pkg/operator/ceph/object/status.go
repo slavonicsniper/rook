@@ -22,6 +22,7 @@ import (
 	"github.com/pkg/errors"
 	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
 	"github.com/rook/rook/pkg/operator/ceph/reporting"
+	"github.com/rook/rook/pkg/operator/k8sutil"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
@@ -29,13 +30,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-func (r *ReconcileCephObjectStore) setFailedStatus(name types.NamespacedName, errMessage string, err error) (reconcile.Result, error) {
-	updateStatus(r.client, name, cephv1.ConditionFailure, map[string]string{})
+func (r *ReconcileCephObjectStore) setFailedStatus(observedGeneration int64, name types.NamespacedName, errMessage string, err error) (reconcile.Result, error) {
+	updateStatus(observedGeneration, r.client, name, cephv1.ConditionFailure, map[string]string{})
 	return reconcile.Result{}, errors.Wrapf(err, "%s", errMessage)
 }
 
 // updateStatus updates an object with a given status
-func updateStatus(client client.Client, namespacedName types.NamespacedName, status cephv1.ConditionType, info map[string]string) {
+func updateStatus(observedGeneration int64, client client.Client, namespacedName types.NamespacedName, status cephv1.ConditionType, info map[string]string) {
 	// Updating the status is important to users, but we can still keep operating if there is a
 	// failure. Retry a few times to give it our best effort attempt.
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -58,6 +59,9 @@ func updateStatus(client client.Client, namespacedName types.NamespacedName, sta
 
 		objectStore.Status.Phase = status
 		objectStore.Status.Info = info
+		if observedGeneration != k8sutil.ObservedGenerationNotAvailable {
+			objectStore.Status.ObservedGeneration = observedGeneration
+		}
 
 		if err := reporting.UpdateStatus(client, objectStore); err != nil {
 			return errors.Wrapf(err, "failed to set object store %q status to %q", namespacedName.String(), status)
@@ -89,12 +93,12 @@ func updateStatusBucket(client client.Client, name types.NamespacedName, status 
 		}
 		objectStore.Status.BucketStatus = toCustomResourceStatus(objectStore.Status.BucketStatus, details, status)
 
+		// do not transition to other statuses once deletion begins
 		if objectStore.Status.Phase != cephv1.ConditionDeleting {
-			// do not transition to to other statuses once deletion begins
-			logger.Debugf("object store %q status not updated to %q because it is deleting", name.String(), status)
 			objectStore.Status.Phase = status
 		}
 
+		// but we still need to update the health checker status
 		if err := reporting.UpdateStatus(client, objectStore); err != nil {
 			return errors.Wrapf(err, "failed to set object store %q status to %v", name.String(), status)
 		}

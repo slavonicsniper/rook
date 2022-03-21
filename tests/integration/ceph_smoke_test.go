@@ -61,15 +61,6 @@ import (
 // - Quota limit wrt no of objects
 // ************************************************
 func TestCephSmokeSuite(t *testing.T) {
-	if installer.SkipTestSuite(installer.CephTestSuite) {
-		t.Skip()
-	}
-
-	// Skip the suite if CSI is not supported
-	kh, err := utils.CreateK8sHelper(func() *testing.T { return t })
-	require.NoError(t, err)
-	checkSkipCSITest(t, kh)
-
 	s := new(SmokeSuite)
 	defer func(s *SmokeSuite) {
 		HandlePanics(recover(), s.TearDownSuite, s.T)
@@ -96,17 +87,17 @@ func (s *SmokeSuite) SetupSuite() {
 		UsePVC:                    installer.UsePVC(),
 		Mons:                      3,
 		SkipOSDCreation:           false,
-		UseCSI:                    true,
 		EnableAdmissionController: true,
+		ConnectionsEncrypted:      true,
+		ConnectionsCompressed:     true,
 		UseCrashPruner:            true,
-		RookVersion:               installer.VersionMaster,
-		CephVersion:               installer.PacificVersion,
+		EnableVolumeReplication:   true,
+		ChangeHostName:            true,
+		RookVersion:               installer.LocalBuildTag,
+		CephVersion:               installer.ReturnCephVersion(),
 	}
 	s.settings.ApplyEnvVars()
-	s.installer, s.k8sh = StartTestCluster(s.T, s.settings, smokeSuiteMinimalTestVersion)
-	if s.k8sh.VersionAtLeast("v1.16.0") {
-		s.settings.EnableVolumeReplication = true
-	}
+	s.installer, s.k8sh = StartTestCluster(s.T, s.settings)
 	s.helper = clients.CreateTestClient(s.k8sh, s.installer.Manifests)
 }
 
@@ -131,7 +122,10 @@ func (s *SmokeSuite) TestObjectStorage_SmokeTest() {
 	if utils.IsPlatformOpenShift() {
 		s.T().Skip("object store tests skipped on openshift")
 	}
-	runObjectE2ETest(s.helper, s.k8sh, s.Suite, s.settings.Namespace)
+	storeName := "lite-store"
+	deleteStore := true
+	tls := false
+	runObjectE2ETestLite(s.T(), s.helper, s.k8sh, s.settings.Namespace, storeName, 2, deleteStore, tls)
 }
 
 // Test to make sure all rook components are installed and Running
@@ -211,7 +205,7 @@ func (s *SmokeSuite) TestPoolResize() {
 	require.NoError(s.T(), err)
 
 	poolFound := false
-	clusterInfo := client.AdminClusterInfo(s.settings.Namespace)
+	clusterInfo := client.AdminTestClusterInfo(s.settings.Namespace)
 
 	// Wait for pool to appear
 	for i := 0; i < 10; i++ {
@@ -288,7 +282,7 @@ func (s *SmokeSuite) TestCreateClient() {
 		"mgr": "allow rwx",
 		"osd": "allow rwx",
 	}
-	clusterInfo := client.AdminClusterInfo(s.settings.Namespace)
+	clusterInfo := client.AdminTestClusterInfo(s.settings.Namespace)
 	err := s.helper.UserClient.Create(clientName, s.settings.Namespace, caps)
 	require.NoError(s.T(), err)
 

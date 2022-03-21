@@ -96,16 +96,18 @@ type CephToolCommand struct {
 	args            []string
 	timeout         time.Duration
 	JsonOutput      bool
+	combinedOutput  bool
 	RemoteExecution bool
 }
 
 func newCephToolCommand(tool string, context *clusterd.Context, clusterInfo *ClusterInfo, args []string) *CephToolCommand {
 	return &CephToolCommand{
-		context:     context,
-		tool:        tool,
-		clusterInfo: clusterInfo,
-		args:        args,
-		JsonOutput:  true,
+		context:        context,
+		tool:           tool,
+		clusterInfo:    clusterInfo,
+		args:           args,
+		JsonOutput:     true,
+		combinedOutput: false,
 	}
 }
 
@@ -126,7 +128,27 @@ func NewRBDCommand(context *clusterd.Context, clusterInfo *ClusterInfo, args []s
 }
 
 func (c *CephToolCommand) run() ([]byte, error) {
-	command, args := FinalizeCephCommandArgs(c.tool, c.clusterInfo, c.args, c.context.ConfigDir)
+	// Return if the context has been canceled
+	if c.clusterInfo.Context.Err() != nil {
+		return nil, c.clusterInfo.Context.Err()
+	}
+
+	// Initialize the command and args
+	command := c.tool
+	args := c.args
+
+	// If this is a remote execution, we don't want to build the full set of args. For instance all
+	// these args are not needed since those paths don't exist inside the cmd-proxy container:
+	//      --cluster=openshift-storage
+	//		--conf=/var/lib/rook/openshift-storage/openshift-storage.config
+	//		--name=client.admin
+	//		--keyring=/var/lib/rook/openshift-storage/client.admin.keyring
+	//
+	// The cmd-proxy container will take care of the rest with the help of the env CEPH_ARGS
+	if !c.RemoteExecution {
+		command, args = FinalizeCephCommandArgs(c.tool, c.clusterInfo, c.args, c.context.ConfigDir)
+	}
+
 	if c.JsonOutput {
 		args = append(args, "--format", "json")
 	} else {
@@ -144,14 +166,20 @@ func (c *CephToolCommand) run() ([]byte, error) {
 	if command == RBDTool {
 		if c.RemoteExecution {
 			output, stderr, err = c.context.RemoteExecutor.ExecCommandInContainerWithFullOutputWithTimeout(ProxyAppLabel, CommandProxyInitContainerName, c.clusterInfo.Namespace, append([]string{command}, args...)...)
-			output = fmt.Sprintf("%s.%s", output, stderr)
+			if stderr != "" || err != nil {
+				err = errors.Errorf("%s. %s", err.Error(), stderr)
+			}
 		} else if c.timeout == 0 {
 			output, err = c.context.Executor.ExecuteCommandWithOutput(command, args...)
 		} else {
 			output, err = c.context.Executor.ExecuteCommandWithTimeout(c.timeout, command, args...)
 		}
 	} else if c.timeout == 0 {
-		output, err = c.context.Executor.ExecuteCommandWithOutput(command, args...)
+		if c.combinedOutput {
+			output, err = c.context.Executor.ExecuteCommandWithCombinedOutput(command, args...)
+		} else {
+			output, err = c.context.Executor.ExecuteCommandWithOutput(command, args...)
+		}
 	} else {
 		output, err = c.context.Executor.ExecuteCommandWithTimeout(c.timeout, command, args...)
 	}
