@@ -90,6 +90,10 @@ cephClusterSpec:
   # enable the ceph dashboard for viewing cluster status
   dashboard:
     enabled: true
+    annotations:
+      nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+      nginx.ingress.kubernetes.io/server-snippet: |
+        proxy_ssl_verify off;
     # serve the dashboard under a subpath (useful when you are accessing the dashboard via a reverse proxy)
     # urlPrefix: /ceph-dashboard
     # serve the dashboard at the given port.
